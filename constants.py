@@ -3,7 +3,7 @@
 	constants.py
 	di MARIO GABRIELE CAROFANO
 
-	...
+	Questo file raccoglie tutti i valori costanti utilizzati nei file di progetto.
 
 """
 

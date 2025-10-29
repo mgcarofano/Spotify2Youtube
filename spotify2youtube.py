@@ -61,33 +61,14 @@ def load_spotify_config():
 	try:
 		config = importlib.import_module("config")
 
-		# required = [
-		# 	"SPOTIFY_CLIENT_ID",
-		# 	"SPOTIFY_CLIENT_SECRET",
-		# 	"SPOTIFY_REDIRECT_URI"
-		# ]
-
-		# missing = [r for r in required if not hasattr(config, r)]
-		# if missing:
-		# 	raise AttributeError(f"Mancano le variabili: {', '.join(missing)}")
-
 		return (
 			config.SPOTIFY_CLIENT_ID if hasattr(config, "SPOTIFY_CLIENT_ID") else None,
 			config.SPOTIFY_CLIENT_SECRET if hasattr(config, "SPOTIFY_CLIENT_SECRET") else None,
 			config.SPOTIFY_REDIRECT_URI if hasattr(config, "SPOTIFY_REDIRECT_URI") else None
 		)
-
-	# except ModuleNotFoundError:
-	# 	# print("⚠️ Il modulo 'config.py' non è presente.")
-	# 	pass
-	# except AttributeError as e:
-	# 	# print(f"⚠️ Errore di configurazione: \n{e}")
-	# 	pass
+	
 	except Exception as e:
-		# print(f"❌ Errore inatteso durante il caricamento del modulo 'config.py': {e}")
-		pass
-
-	return None, None, None
+		return None, None, None
 
 	# end
 
@@ -377,23 +358,6 @@ def search_youtube_video(track: dict, query_type: QueryType = QueryType.AUDIO) -
 	try:
 
 		query = f"{track['name']} {track['artists']} {query_type.value}"
-
-		# Utilizziamo le YouTube Data API v3 per cercare video.
-		# res = yt.search().list(
-		# 	q = query,
-		# 	part = "snippet",
-		# 	type = "video",
-		# 	maxResults = 1,
-		# 	order = "relevance"
-		# ).execute()
-
-		# items = res.get("items", [])
-		# if not items:
-		# 	return None
-		
-		# video_id = items[0]["id"]["videoId"]
-
-		# return f"https://youtu.be/{video_id}"
 	
 		with YoutubeDL(YOUTUBE_SEARCH_OPTIONS) as ydl:
 			res = ydl.extract_info(f"ytsearch{YOUTUBE_QUERY_LIMIT}:{query}", download=False)
@@ -414,10 +378,6 @@ def search_youtube_video(track: dict, query_type: QueryType = QueryType.AUDIO) -
 		video_id = items[0]['id']
 
 		return f"https://youtu.be/{video_id}"
-	
-	# except HttpError as e:
-	# 	print(f"⚠️ Errore HTTP YouTube API per '{query}': {e}\n")
-	# 	return None
 
 	except Exception as e:
 		print(f"⚠️ Errore generico in 'search_youtube_video' per '{query or '?'}': {e}\n")
@@ -546,7 +506,6 @@ def download_from_csv(
 			continue
 
 		with YoutubeDL(ydl_opts) as ydl:
-			# print(f"⬇️ Download in corso: {track_name}")
 			ydl.download([url])
 		
 		# end for row
