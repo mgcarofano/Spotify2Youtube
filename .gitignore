@@ -1,0 +1,5 @@
+config.py
+/output
+test.py
+.spotify_cache
+*.pyc
