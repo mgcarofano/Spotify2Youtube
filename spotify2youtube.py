@@ -46,9 +46,6 @@ from spotipy import Spotify
 from spotipy.oauth2 import SpotifyOAuth
 from yt_dlp import YoutubeDL
 
-import curses
-from curses import wrapper
-
 import importlib
 from constants import *
 
@@ -155,7 +152,7 @@ def get_spotify_client(id: str, secret: str, uri: str) -> Spotify | None:
 	# end
 
 #	########################################################################	#
-#	CREAZIONE della playlist
+#	CREAZIONE e MODIFICA delle playlist
 
 def search_spotify_tracks(sp: Spotify, query: str) -> list | None:
 	"""Esegue una ricerca su Spotify e restituisce i risultati, se esistono.
@@ -223,6 +220,88 @@ def upload_spotify_playlist(sp: Spotify, playlist_name: str, selected_tracks: li
 	except Exception as e:
 		print(f"❌ Errore durante la creazione della playlist: {e}")
 		return None
+
+	# end
+
+def create_playlist_by_bpm(
+	sp: Spotify,
+	playlist_id: str,
+	ranges: list[tuple[int, int]],
+	base_name: str
+) -> list[str] | None:
+	
+	bpm_groups = {f"{r[0]}-{r[1]}": [] for r in ranges}
+
+	results = []
+	track_ids = []
+	features = []
+
+	try:
+
+		user_id = sp.current_user()["id"]
+		playlist = sp.playlist(playlist_id)
+		total_tracks = playlist["tracks"]["total"]
+
+		for offset in range(0, total_tracks, SPOTIFY_REQUEST_LIMIT):
+			
+			# Si estraggono i dati di 'limit' brani dalla playlist.
+			data = sp.playlist_tracks(
+				playlist_id,
+				offset=offset,
+				limit=SPOTIFY_REQUEST_LIMIT,
+				fields="items.track.id"
+			)
+
+			track_ids.extend([item["track"]["id"] for item in data["items"] if item["track"]])
+			
+			# end for offset
+
+		print(f"Trovati {len(track_ids)} brani.")
+
+		# Recupera le audio features di una lista di brani.
+		# In blocchi da 100 per evitare "Error 414: URI Too Long".
+		for i in range(0, len(track_ids), SPOTIFY_REQUEST_LIMIT):
+			print(f"Elaborazione blocco {i}-{i+SPOTIFY_REQUEST_LIMIT}")
+			chunk = track_ids[i:i+SPOTIFY_REQUEST_LIMIT]
+			f = sp.audio_features(chunk)
+			if f:
+				features.extend(f)
+		
+		# Rimuove eventuali None
+		features = [f for f in features if f]
+
+		for f in features:
+			if not f:
+				continue
+			bpm = f["tempo"]
+			for r in ranges:
+				if r[0] <= bpm < r[1]:
+					bpm_groups[f"{r[0]}-{r[1]}"].append(f["id"])
+					break
+				# end for r
+			# end for f
+		
+		for label, tracks in bpm_groups.items():
+			
+			if not tracks:
+				continue
+
+			playlist_name = f"{base_name} [{label} BPM]"
+			new_playlist = sp.user_playlist_create(user=user_id, name=playlist_name, public=False)
+			
+			playlist_id = new_playlist["id"]
+			sp.playlist_add_items(playlist_id, tracks)
+			results.append(playlist_id)
+
+			print(f"\n✅ Playlist aggiunta: {playlist_id} | {playlist_name} | {len(tracks)} brani")
+
+			# end for label, tracks
+
+	except Exception as e:
+		print(f"❌ Errore durante la creazione della playlist: {e}")
+		return None
+	
+	return results
 
 	# end
 
@@ -360,23 +439,34 @@ def search_youtube_video(track: dict, query_type: QueryType = QueryType.AUDIO) -
 		query = f"{track['name']} {track['artists']} {query_type.value}"
 	
 		with YoutubeDL(YOUTUBE_SEARCH_OPTIONS) as ydl:
-			res = ydl.extract_info(f"ytsearch{YOUTUBE_QUERY_LIMIT}:{query}", download=False)
+			res = ydl.extract_info(f"ytsearchall:{query}", download=False)
 	
 		items = res.get("entries", [])
 		if not items:
 			print(f"⚠️ Nessun video trovato per '{query}'.")
 			return None
 		
-		items = [v for v in items
-			if v.get("duration") \
-			and v["duration"] <= YOUTUBE_DURATION_LIMIT
+		# print(f"\n\n{items}\n\n")
+		
+		items = [
+			v for v in items
+			if v.get("duration") and v["duration"] <= YOUTUBE_DURATION_LIMIT
 		]
 		if not items:
 			print(f"⚠️ Nessun video valido trovato per '{query}'.")
 			return None
 		
+		# if query_type == QueryType.AUDIO:
+		# 	for v in items:
+		# 		if YOUTUBE_VERIFIED_STRING in (v.get('description') or "").lower():
+		# 			return f"https://youtu.be/{v['id']}"
+		# 	for v in items:
+		# 		if (v.get("channel_is_verified") and v['channel_is_verified']):
+		# 			return f"https://youtu.be/{v['id']}"
+		# 	print(f"⚠️ Nessun video valido trovato per '{query}'.")
+		# 	return None
+		
 		video_id = items[0]['id']
-
 		return f"https://youtu.be/{video_id}"
 
 	except Exception as e:
@@ -602,22 +692,21 @@ if __name__ == '__main__':
 					except KeyboardInterrupt:
 
 						print("\n🆗 Inserimento terminato manualmente.\n")
-
 						if not selected_tracks:
 							print("⚠️ Nessuna traccia selezionata. Playlist non creata.")
 							continue
 
-						playlist_id = upload_spotify_playlist(sp, nome_scelto, selected_tracks)
-						if not playlist_id:
-							continue
-
-						playlist_name = get_safename(nome_scelto)
-
-						playlists[playlist_id] = {"name": playlist_name}
-						
-						print(f"\n✅ Playlist aggiunta: {playlist_id} | {nome_scelto}")
-
 					# end try
+
+					playlist_id = upload_spotify_playlist(sp, nome_scelto, selected_tracks)
+					if not playlist_id:
+						continue
+
+					playlist_name = get_safename(nome_scelto)
+
+					playlists[playlist_id] = {"name": playlist_name}
+					
+					print(f"\n✅ Playlist aggiunta: {playlist_id} | {nome_scelto}")
 
 				elif menu_scelta == MenuItems.ADD_PLAYLIST:
 
@@ -633,13 +722,81 @@ if __name__ == '__main__':
 					
 					print(f"\n✅ Playlist aggiunta: {playlist_id} | {playlist_info['name']}")
 
+				# elif menu_scelta == MenuItems.EDIT_PLAYLIST:
+
+				# 	if not playlists:
+				# 		print("⚠️ Nessuna playlist da elaborare.")
+				# 		continue
+					
+				# 	print("\n🎧 Playlist inserite:")
+				# 	playlist_ids = print_local_playlists(playlists)
+				# 	playlist_scelta = input(f"\n👉 Seleziona un'opzione (1-{len(playlists)}): ").strip()
+
+				# 	if not playlist_scelta.isdigit():
+				# 		print("❌ Opzione non valida.")
+				# 		continue
+
+				# 	playlist_scelta = int(playlist_scelta)
+				# 	if not 1 <= playlist_scelta <= len(playlists):
+				# 		print("❌ Opzione non valida.")
+				# 		continue
+
+				# 	playlist_scelta = playlist_ids[playlist_scelta - 1]
+				# 	playlist_info = playlists[playlist_scelta]
+				# 	if not playlist_info:
+				# 		print("❌ Playlist non valida.")
+				# 		continue
+
+				# 	print("👉 Inserisci il valore di BPM di separazione (premi Ctrl + C per terminare):")
+				# 	bpm_scelto = []
+				# 	cont = 1
+
+				# 	try:
+
+				# 		bpm_scelto.clear()
+						
+				# 		while True:
+				# 			bpm_input = input(f"Valore {cont}: ").strip()
+							
+				# 			if not bpm_input.isdigit():
+				# 				print("❌ Valore non valido.")
+				# 				continue
+
+				# 			bpm_scelto.append(int(bpm_input))
+				# 			cont = cont + 1
+
+				# 			# end while
+
+				# 	except KeyboardInterrupt:
+
+				# 		print("\n🆗 Inserimento terminato manualmente.\n")
+				# 		if not bpm_scelto:
+				# 			print("⚠️ Nessun valore selezionato.")
+				# 			continue
+					
+				# 	# end try
+
+				# 	bpm_scelto = [0] + sorted(set(x for x in bpm_scelto)) + [float('inf')]
+				# 	ranges = [(bpm_scelto[i], bpm_scelto[i+1]) for i in range(len(bpm_scelto)-1)]
+
+				# 	# # Stampa formattata
+				# 	# for r in ranges:
+				# 	# 	if r[1] == float('inf'):
+				# 	# 		print(f"{r[0]}+ BPM")
+				# 	# 	else:
+				# 	# 		print(f"{r[0]} - {r[1]} BPM")
+
+				# 	create_playlist_by_bpm(sp, playlist_scelta, ranges, playlist_info["name"])
+
+				# 	print("✅ Elaborazione completata.")
+
 				elif menu_scelta == MenuItems.PRINT_PLAYLIST:
 
 					if not playlists:
 						print("⚠️ Nessuna playlist inserita.")
 						continue
 
-					print("🎧 Playlist inserite:")
+					print("\n🎧 Playlist inserite:")
 					print_local_playlists(playlists)
 
 				elif menu_scelta == MenuItems.PROCESS_PLAYLIST:
@@ -663,7 +820,11 @@ if __name__ == '__main__':
 
 					playlist_scelta = playlist_ids[playlist_scelta - 1]
 					
-					dir_scelta = input("👉 Inserisci la cartella di output (default: 'output'): ").strip() or "output"
+					dir_scelta = input("👉 Inserisci la cartella di output (default: 'output'): ") \
+						.strip() \
+						.strip("\"") \
+						.strip("\'") \
+						or "output"
 
 					print("👉 Inserisci il tipo di query:")
 					for idx, query in enumerate(QUERY_LIST, 1):
@@ -702,7 +863,10 @@ if __name__ == '__main__':
 
 					if not playlists or all(not data.get("csv") for data in playlists.values()):
 						print("⚠️ Nessun file CSV generato in questa sessione.")
-						scelta_csv = input("👉 Inserisci il percorso del file CSV: ").strip()
+						scelta_csv = input("👉 Inserisci il percorso del file CSV: ") \
+							.strip() \
+							.strip("\"") \
+							.strip("\'")
 
 						if not scelta_csv:
 							print("❌ Nessun file fornito.\n")
@@ -733,7 +897,11 @@ if __name__ == '__main__':
 						print(f"❌ Il file '{csv_file}' non esiste.\n")
 						continue
 
-					dir_scelta = input("👉 Inserisci la cartella di download (default: 'downloads'): ").strip() or "downloads"
+					dir_scelta = input("👉 Inserisci la cartella di download (default: 'downloads'): ") \
+						.strip() \
+						.strip("\"") \
+						.strip("\'") \
+						or "downloads"
 
 					try:
 						print(f"\n🎵 Avvio download per '{playlist_name}'...")
@@ -763,6 +931,7 @@ if __name__ == '__main__':
 				continue
 
 	except KeyboardInterrupt:
+		print('\nInterruzione in corso...')
 		pass
 
 	#	####################################################################	#

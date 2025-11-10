@@ -3,3 +3,4 @@ config.py
 test.py
 .spotify_cache
 *.pyc
+/downloads
