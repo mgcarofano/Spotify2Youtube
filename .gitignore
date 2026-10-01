@@ -4,3 +4,4 @@ test.py
 .spotify_cache
 *.pyc
 /downloads
+.DS_Store

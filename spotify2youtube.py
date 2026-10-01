@@ -34,122 +34,16 @@
 from datetime import datetime
 import random
 import time
+import tempfile
+from urllib.error import HTTPError
 
-import csv
-import os
+import pandas as pd
 from tqdm import tqdm
 
-import re
-import unicodedata
-
-from spotipy import Spotify
-from spotipy.oauth2 import SpotifyOAuth
 from yt_dlp import YoutubeDL
+from ytmusicapi import YTMusic
 
-import importlib
-from constants import *
-
-#	########################################################################	#
-#	CONTROLLO di VALIDITÀ del file config.py
-
-def load_spotify_config():
-	"""Importa in sicurezza il modulo config.py e controlla le variabili richieste."""
-
-	try:
-		config = importlib.import_module("config")
-
-		return (
-			config.SPOTIFY_CLIENT_ID if hasattr(config, "SPOTIFY_CLIENT_ID") else None,
-			config.SPOTIFY_CLIENT_SECRET if hasattr(config, "SPOTIFY_CLIENT_SECRET") else None,
-			config.SPOTIFY_REDIRECT_URI if hasattr(config, "SPOTIFY_REDIRECT_URI") else None
-		)
-	
-	except Exception as e:
-		return None, None, None
-
-	# end
-
-#	########################################################################	#
-#	CONTROLLO di VALIDITÀ dei nomi
-
-def get_safename(
-	input_name: str,
-	max_length: int = 35
-) -> str:
-	"""Crea un nome file sicuro per macOS, Windows e Linux. \n
-	-	Rimuove caratteri speciali non ammessi (: / ? * < > | \ "). \n
-	-	Normalizza gli accenti. \n
-	-	Rimuove spazi doppi e caratteri di controllo. \n
-	-	Tronca il nome se troppo lungo.
-
-	Args:
-		input_name (str): stringa di testo da elaborare.
-		max_length (int, optional): lunghezza massima della string. Defaults to 35.
-
-	Returns:
-		str: il nome file sicuro.
-	"""
-
-	safe_name = input_name
-
-	# Normalizza unicode (es. è -> e).
-	safe_name = unicodedata.normalize("NFKD", safe_name)
-	safe_name = safe_name.encode("ascii", "ignore").decode("ascii")
-
-	# Rimuove caratteri non validi per filesystem.
-	safe_name = re.sub(r'[\/:*?"<>|\\]', "_", safe_name)
-
-	# Rimuove caratteri di controllo e punti finali.
-	safe_name = re.sub(r'[\x00-\x1F]', '', safe_name).strip('. ')
-
-	# Rimpiazza spazi multipli con uno solo.
-	safe_name = re.sub(r'\s+', ' ', safe_name).strip()
-
-	# Tronca se troppo lungo.
-	if len(safe_name) > max_length:
-		safe_name = safe_name[:max_length].rstrip()
-
-	return safe_name
-
-	# end
-
-#	########################################################################	#
-#	AUTENTICAZIONE in SPOTIFY
-
-def get_spotify_client(id: str, secret: str, uri: str) -> Spotify | None:
-	"""Restituisce un client Spotify autenticato.
-
-	Args:
-		id (str): il Client ID dell'account Developer.
-		secret (str): il Client SECRET dell'account Developer.
-		uri (str): il Redirect URI dell'account Developer.
-
-	Returns:
-		Spotify: il client Spotify.
-	"""
-
-	auth = SpotifyOAuth(
-		client_id = id,
-		client_secret = secret,
-		redirect_uri = uri,
-		scope = SPOTIFY_SCOPE,
-		cache_path = SPOTIFY_CACHE_PATH,
-		show_dialog = True,
-		open_browser = True
-	)
-
-	sp = Spotify(auth_manager = auth)
-
-	try:
-		user = sp.current_user()
-		print(f"✅ Autenticato come: {user['id']} | {user['display_name']}")
-	except Exception as e:
-		print(f"⚠️ Utente non autenticato: {e}")
-		return None
-	
-	return sp
-	
-	# end
+from utilities import *
 
 #	########################################################################	#
 #	CREAZIONE e MODIFICA delle playlist
@@ -223,88 +117,6 @@ def upload_spotify_playlist(sp: Spotify, playlist_name: str, selected_tracks: li
 
 	# end
 
-def create_playlist_by_bpm(
-	sp: Spotify,
-	playlist_id: str,
-	ranges: list[tuple[int, int]],
-	base_name: str
-) -> list[str] | None:
-	
-	bpm_groups = {f"{r[0]}-{r[1]}": [] for r in ranges}
-
-	results = []
-	track_ids = []
-	features = []
-
-	try:
-
-		user_id = sp.current_user()["id"]
-		playlist = sp.playlist(playlist_id)
-		total_tracks = playlist["tracks"]["total"]
-
-		for offset in range(0, total_tracks, SPOTIFY_REQUEST_LIMIT):
-			
-			# Si estraggono i dati di 'limit' brani dalla playlist.
-			data = sp.playlist_tracks(
-				playlist_id,
-				offset=offset,
-				limit=SPOTIFY_REQUEST_LIMIT,
-				fields="items.track.id"
-			)
-
-			track_ids.extend([item["track"]["id"] for item in data["items"] if item["track"]])
-			
-			# end for offset
-
-		print(f"Trovati {len(track_ids)} brani.")
-
-		# Recupera le audio features di una lista di brani.
-		# In blocchi da 100 per evitare "Error 414: URI Too Long".
-		for i in range(0, len(track_ids), SPOTIFY_REQUEST_LIMIT):
-			print(f"Elaborazione blocco {i}-{i+SPOTIFY_REQUEST_LIMIT}")
-			chunk = track_ids[i:i+SPOTIFY_REQUEST_LIMIT]
-			f = sp.audio_features(chunk)
-			if f:
-				features.extend(f)
-		
-		# Rimuove eventuali None
-		features = [f for f in features if f]
-
-		for f in features:
-			if not f:
-				continue
-			bpm = f["tempo"]
-			for r in ranges:
-				if r[0] <= bpm < r[1]:
-					bpm_groups[f"{r[0]}-{r[1]}"].append(f["id"])
-					break
-				# end for r
-			# end for f
-		
-		for label, tracks in bpm_groups.items():
-			
-			if not tracks:
-				continue
-
-			playlist_name = f"{base_name} [{label} BPM]"
-			new_playlist = sp.user_playlist_create(user=user_id, name=playlist_name, public=False)
-			
-			playlist_id = new_playlist["id"]
-			sp.playlist_add_items(playlist_id, tracks)
-			results.append(playlist_id)
-
-			print(f"\n✅ Playlist aggiunta: {playlist_id} | {playlist_name} | {len(tracks)} brani")
-
-			# end for label, tracks
-
-	except Exception as e:
-		print(f"❌ Errore durante la creazione della playlist: {e}")
-		return None
-	
-	return results
-
-	# end
-
 #	########################################################################	#
 #	ELABORAZIONE e SALVATAGGIO delle playlists
 
@@ -350,28 +162,41 @@ def extract_playlist_tracks(sp: Spotify, playlist_id: str) -> list[dict]:
 			playlist_id,
 			offset=offset,
 			limit=SPOTIFY_REQUEST_LIMIT,
-			fields="items(track(name,artists(name)))"
+			fields="items(track(name,artists(name),duration_ms))"
 		)
 
 		for item in data["items"]:
 
 			track = item["track"]
 
-			if track:
+			if not track:
+				print("⚠️ Traccia non valida.")
+				continue
 
-				track_name = track["name"]
-				track_artists = ", ".join(
-					artist["name"]
-					for artist
-					in track["artists"][:SPOTIFY_ARTISTS_LIMIT]
-				)
+			track_name = track["name"]
+			if not track_name:
+				print("⚠️ Nome della traccia non trovato.")
+				continue
+			
+			track_artists = ", ".join(
+				artist["name"]
+				for artist
+				in track["artists"][:SPOTIFY_ARTISTS_LIMIT]
+			)
+			if track_artists == "":
+				print("⚠️ Nomi degli artisti non trovati.")
+				continue
+			
+			track_duration = track["duration_ms"]
+			if not track_duration or track_duration <= 0:
+				print("⚠️ Durata della traccia non trovata.")
+				continue
 
-				if track["name"] and track_artists != "":
-
-					results.append({
-						"name": track_name,
-						"artists": track_artists
-					})
+			results.append({
+				"name": track_name,
+				"artists": track_artists,
+				"duration": track_duration // 1000
+			})
 
 			# end for item
 		
@@ -423,60 +248,156 @@ def get_processed_playlists(playlists: dict) -> list:
 
 	# end
 
-def search_youtube_video(track: dict, query_type: QueryType = QueryType.AUDIO) -> str | None:
-	"""Cerca un video su YouTube e restituisce l'URL del primo risultato.
+def search_from_youtube(
+		ytmusic: YTMusic,
+		track: dict,
+		query_type: QueryType = QueryType.AUDIO
+	) -> list[dict] | None:
+	"""Cerca risultati YouTube e restituisce i metadati di quelli che superano i filtri.
 
 	Args:
+		ytmusic (YTMusic): client YTMusic.
 		track (dict): dizionario che descrive la canzone da scaricare.
-		query_type (QueryType): il tipo di video che si vuole scaricare. Defaults to QueryType.AUDIO.
-	
-	Returns:
-		str: l'URL del primo risultato su Youtube.
-	"""
-	
-	try:
+		query_type (QueryType, optional): il tipo di video che si vuole scaricare. Defaults to QueryType.AUDIO.
 
-		query = f"{track['name']} {track['artists']} {query_type.value}"
-	
-		with YoutubeDL(YOUTUBE_SEARCH_OPTIONS) as ydl:
-			res = ydl.extract_info(f"ytsearchall:{query}", download=False)
-	
-		items = res.get("entries", [])
-		if not items:
-			print(f"⚠️ Nessun video trovato per '{query}'.")
-			return None
+	Returns:
+		list[dict] | None: lista dei risultati validi su YouTube.
+	"""
+
+	# def normalize_result(raw: dict, id_key: str) -> dict:
+	# 	item = normalize_ytmusic_item(raw, id_key)
+	# 	item["title"] = raw.get("title") or item.get("title")
+	# 	item["channel"] = (
+	# 		raw.get("channel")
+	# 		or raw.get("uploader")
+	# 		or raw.get("channel_name")
+	# 	)
+	# 	return item
+
+	# 	# end normalize_result
+
+	query = f"{track['name']} {track['artists']} {query_type.value}"
+	print(f"\n🔍 Ricerca su YouTube per: '{query}'")
+
+	initial_limit = max(1, YOUTUBE_QUERY_LIMIT)
+	current_limit = initial_limit
+	max_results = max(initial_limit, MAX_YOUTUBE_RESULTS)
+	seen_ids = set()
+	ret = []
+
+	try:
+		while not ret:
+
+			if query_type in [QueryType.AUDIO, QueryType.EXTENDED]:
+
+				items = [
+					normalize_result(v, "videoId")
+					for v in ytmusic.search(
+						query,
+						filter="songs",
+						limit=current_limit
+					)
+				]
+
+			elif query_type in [QueryType.VIDEO, QueryType.LYRICS]:
+
+				with YoutubeDL(YOUTUBE_SEARCH_OPTIONS) as ydl:
+					res = ydl.extract_info(
+						f"ytsearch{current_limit}:{query}",
+						download=False
+					)
+
+				items = [
+					normalize_result(v, "id")
+					for v in res.get("entries", [])
+					if v
+				]
+
+			else:
+
+				raise ValueError("QueryType non valido.")
+			
+			# end if query_type
+			
+			if not items:
+				print(f"⚠️ Nessun altro risultato trovato per '{query}'.")
+				break
+
+			# La ricerca ampliata include anche i risultati già visti:
+			# considera soltanto gli ID nuovi.
+
+			new_items = []
+			for v in items:
+				video_id = v.get("id")
+				if video_id and video_id not in seen_ids:
+					seen_ids.add(video_id)
+					new_items.append(v)
+
+			# Se l'API non restituisce risultati nuovi, non c'è altro da esaminare.
+			if not new_items:
+				print(f"⚠️ Nessun nuovo risultato trovato per '{query}'.")
+				break
+			
+			for v in new_items:
+				v_id = v.get('id')
+				v_duration = v.get('duration')
+
+				if not v_id or not v_duration:
+					print(f"⚠️ Scartato. ID o durata mancante: {v}")
+					continue
+
+				if v_duration > YOUTUBE_DURATION_LIMIT:
+					print(f"⚠️ Scartato. Durata eccessiva: {v_duration} secondi")
+					continue
+
+				s_duration = track.get("duration", 0)
+				if abs(s_duration - v_duration) > YOUTUBE_MARGIN_SECONDS:
+					print(f"⚠️ Scartato. Durata su Youtube ({v_duration}) non compatibile rispetto alla traccia su Spotify ({s_duration}).")
+					continue
+
+				if query_type == QueryType.EXTENDED:
+					v_title = (v.get("title") or "").lower()
+
+					if any(k in v_title for k in YOUTUBE_EXTENDED_EXCLUDED_KEYWORDS):
+						continue
+
+					if not any(k in v_title for k in YOUTUBE_EXTENDED_INCLUDED_KEYWORDS):
+						continue
+
+				ret.append({
+					"url": f"https://youtu.be/{v_id}",
+					"channel": v.get("channel"),
+					"original_title": v.get("title"),
+				})
+
+			# end for v
+
+			if ret or current_limit >= max_results:
+				print(f"⚠️ Limite massimo di risultati raggiunto ({current_limit}).")
+				break
+
+			current_limit = min(current_limit + YOUTUBE_QUERY_LIMIT, max_results)
 		
-		# print(f"\n\n{items}\n\n")
-		
-		items = [
-			v for v in items
-			if v.get("duration") and v["duration"] <= YOUTUBE_DURATION_LIMIT
-		]
-		if not items:
-			print(f"⚠️ Nessun video valido trovato per '{query}'.")
-			return None
-		
-		# if query_type == QueryType.AUDIO:
-		# 	for v in items:
-		# 		if YOUTUBE_VERIFIED_STRING in (v.get('description') or "").lower():
-		# 			return f"https://youtu.be/{v['id']}"
-		# 	for v in items:
-		# 		if (v.get("channel_is_verified") and v['channel_is_verified']):
-		# 			return f"https://youtu.be/{v['id']}"
-		# 	print(f"⚠️ Nessun video valido trovato per '{query}'.")
-		# 	return None
-		
-		video_id = items[0]['id']
-		return f"https://youtu.be/{video_id}"
+		# end while
+
+		if ret:
+			return ret
+
+		print(f"⚠️ Nessun risultato valido trovato per '{query}'.")
+		return None
 
 	except Exception as e:
-		print(f"⚠️ Errore generico in 'search_youtube_video' per '{query or '?'}': {e}\n")
+		print(
+			f"⚠️ Errore generico in 'search_from_youtube' "
+		    f"per '{query or '?'}': {e}\n"
+		)
 		return None
 
 	# end
 
 def process_playlist(
 		sp: Spotify,
+		yt_music: YTMusic,
 		playlist_id: str,
 		playlist_name: str,
 		query_type: QueryType,
@@ -488,6 +409,7 @@ def process_playlist(
 
 	Args:
 		sp (Spotify): il client Spotify.
+		yt_music (YTMusic): il client Youtube.
 		playlist_id (str): ID Spotify di una playlist.
 		playlist_name (str): nome della playlist Spotify.
 		query_type (QueryType): il tipo di video che si vuole scaricare.
@@ -499,11 +421,11 @@ def process_playlist(
 		str: il path del file CSV in output.
 	"""
 
-	os.makedirs(output_dir, exist_ok=True)
+	out_dir = Path(output_dir)
+	out_dir.mkdir(parents=True, exist_ok=True)
 
 	timestamp = datetime.now().strftime("%Y.%m.%d")
-	
-	file_path = os.path.join(output_dir, f"{timestamp} - {playlist_name}.csv")
+	file_path = out_dir / f"{timestamp} - {playlist_name}_{(query_type.name).lower()}.csv"
 
 	print(f"\n🎧 Elaboro playlist: {playlist_name}")
 	tracks = extract_playlist_tracks(sp, playlist_id)
@@ -515,27 +437,86 @@ def process_playlist(
 	
 	subset = tracks[start:end]
 
-	with open(file_path, "w", encoding="utf-8", newline="") as csvfile:
-		writer = csv.DictWriter(csvfile, fieldnames=["track name", "track artists", "query type", "youtube link"])
-		writer.writeheader()
+	# print(f"\n\nSubset: {subset}\n\n")
 
-		for track in tqdm(subset, desc="Ricerca su YouTube"):
-			youtube_link = search_youtube_video(track, query_type) or "-"
+	# with open(file_path, "w", encoding="utf-8", newline="") as csvfile:
+	# 	writer = csv.DictWriter(
+	# 		csvfile,
+	# 		fieldnames=[
+	# 			"track name",
+	# 			"track artists",
+	# 			"query type",
+	# 			"youtube links",
+	# 			"original title",
+	# 			"youtube channel",
+	# 		],
+	# 	)
+	# 	writer.writeheader()
 
-			writer.writerow({
-                "track name": track["name"],
-                "track artists": track["artists"],
-                "query type": query_type.value,
-                "youtube link": youtube_link
-            })
+	# 	for track in tqdm(subset, desc="Ricerca su YouTube"):
+	# 		yt_data = search_from_youtube(yt_music, track, query_type) or []
 
-			# Per evitare rate limit.
-			time.sleep(random.uniform(0.5, 1.5))
+	# 		writer.writerow({
+    #             "track name": track["name"],
+    #             "track artists": track["artists"],
+    #             "query type": query_type.value,
+    #             "youtube links": json.dumps(
+	# 				[result["url"] for result in yt_data if result.get("url")],
+	# 				ensure_ascii=False,
+	# 			),
+	# 			"original titles": json.dumps(
+	# 				[result.get("original_title") for result in yt_data],
+	# 				ensure_ascii=False,
+	# 			),
+	# 			"youtube channels": json.dumps(
+	# 				[result.get("channel") for result in yt_data],
+	# 				ensure_ascii=False,
+	# 			),
+    #         })
+
+	# 		# Per evitare rate limit.
+	# 		time.sleep(random.uniform(0.5, 1.5))
 		
-			# end for track
+	# 		# end for track
 		
-		# end open csvfile
+	# 	# end open csvfile
 	
+	# return file_path
+
+	rows = []
+
+	for track in tqdm(subset, desc="Ricerca su YouTube"):
+		yt_data = search_from_youtube(yt_music, track, query_type) or []
+
+		# Salva una riga per ogni risultato di ricerca.
+		# Se non ci sono dati da youtube, salva comunque una riga vuota.
+		results = yt_data or [{}]
+
+		for r in results:
+			rows.append({
+			"track name": track["name"],
+			"track artists": track["artists"],
+			"query type": query_type.value,
+			"youtube link": r.get("url", ""),
+			"original title": r.get("original_title", ""),
+			"youtube channel": r.get("channel", ""),
+		})
+
+		# Per evitare rate limit.
+		time.sleep(random.uniform(0.5, 1.5))
+
+		pd.DataFrame(
+			rows,
+			columns=[
+				"track name",
+				"track artists",
+				"query type",
+				"youtube link",
+				"original title",
+				"youtube channel",
+			],
+		).to_csv(file_path, index=False, encoding="utf-8")
+
 	return file_path
 
 	# end
@@ -556,51 +537,156 @@ def download_from_csv(
 		output_dir (str, optional): la directory dove salvare i download. Defaults to "downloads".
 	
 	Returns:
-		None
+		str: il percorso della directory dei download.
 	"""
 
 	timestamp = datetime.now().strftime("%Y.%m.%d")
-	output_dir = f"{output_dir}/{timestamp} - {playlist_name}"
-	os.makedirs(output_dir, exist_ok=True)
+	output_path = Path(output_dir) / (f"{timestamp} - {playlist_name}")
+	output_path.mkdir(parents=True, exist_ok=True)
 
-	with open(csv_file, newline="", encoding="utf-8") as f:
-		data = list(csv.DictReader(f))
+	# with open(csv_file, newline="", encoding="utf-8") as f:
+	# 	data = list(csv.DictReader(f))
 
-	for row in tqdm(data, total=len(data), desc="Download da YouTube"):
-		track_name = row["track name"]
-		track_artists = row["track artists"]
-		query = row.get("query type", "").lower()
-		url = row["youtube link"]
+	# for row in tqdm(data, total=len(data), desc="Download da YouTube"):
+	# 	# Si resetta l'URL scelto per ogni traccia.
+	# 	url_scelto = None
+	# 	choice = None
 
-		if not url or url == "-":
+	# 	track_name = row["track name"]
+	# 	track_artists = row["track artists"]
+	# 	query = row.get("query type", "").lower()
+	# 	raw_urls = row.get("youtube links", "")
+
+	# 	if not raw_urls or raw_urls == "-":
+	# 		print(f"❌ Link non trovato per {track_name}")
+	# 		continue
+
+	# 	raw_urls = json.loads(raw_urls.replace('\'', '"'))
+
+	data = pd.read_csv(csv_file).fillna("")
+	group_columns = ["track name", "track artists", "query type"]
+
+	for (track_name, track_artists, query), group in tqdm(
+        data.groupby(group_columns, sort=False, dropna=False),
+        total=data.groupby(group_columns, sort=False, dropna=False).ngroups,
+        desc="Download da YouTube",
+    ):
+
+		track_name = str(track_name)
+		track_artists = str(track_artists)
+		query = str(query).strip().lower()
+
+		# Nel CSV ogni riga contiene un singolo risultato.
+		# Raccoglie URL e metadati, eliminando URL vuoti o duplicati.
+		results = []
+		seen_urls = set()
+
+		for url, channel, title in group[
+			["youtube link", "youtube channel", "original title"]
+		].itertuples(index=False, name=None):
+			url = str(url).strip()
+			if not url or url == "-" or url in seen_urls:
+				continue
+
+			seen_urls.add(url)
+			results.append((url, str(channel).strip(), str(title).strip()))
+
+		if not results:
 			print(f"❌ Link non trovato per {track_name}")
+			continue
+
+		url_scelto = None
+		try:
+			while url_scelto is None:
+				print(f"\n🔎 Trovati {len(results)} risultati per {track_name}:")
+				for index, (url, channel, title) in enumerate(results, start=1):
+					print(
+						f"{index}.\t{url}"
+						f" | {channel or 'N/D'}"
+						f" | {title or 'N/D'}"
+					)
+
+				choice = input(f"Seleziona il link da scaricare (1-{len(results)}): ").strip()
+				if choice.isdigit() and 1 <= int(choice) <= len(results):
+					url_scelto = results[int(choice) - 1][0]
+				else:
+					print("❌ Opzione non valida.")
+
+		except KeyboardInterrupt:
+			print(f"\n⏭️ Selezione annullata: {track_name}")
 			continue
 		
 		# Genera un nome file sicuro.
-		safe_name = f"{get_safename(track_name)} - {get_safename(track_artists)}"
+		safe_name = (
+            f"{get_safename(track_name)} - "
+            f"{get_safename(track_artists)}"
+        )
 
-		if query == QueryType.VIDEO.value:
-			ydl_opts = YOUTUBE_DOWNLOAD_VIDEO_OPTIONS
-			ydl_opts["outtmpl"] = os.path.join(output_dir, f"{safe_name}.mp4")
-		elif query == QueryType.AUDIO.value:
-			ydl_opts = YOUTUBE_DOWNLOAD_AUDIO_OPTIONS
-			ydl_opts["outtmpl"] = os.path.join(output_dir, f"{safe_name}")
-		elif query == QueryType.LYRICS.value:
-			ydl_opts = YOUTUBE_DOWNLOAD_VIDEO_OPTIONS
-			ydl_opts["outtmpl"] = os.path.join(output_dir, f"{safe_name}.mp4")
-		elif query == QueryType.EXTENDED.value:
-			ydl_opts = YOUTUBE_DOWNLOAD_AUDIO_OPTIONS
-			ydl_opts["outtmpl"] = os.path.join(output_dir, f"{safe_name}")
-		else:
-			print(f"❌ Query non valida per {track_name}")
-			continue
+		try:
 
-		with YoutubeDL(ydl_opts) as ydl:
-			ydl.download([url])
+			if query in {QueryType.VIDEO.value, QueryType.LYRICS.value}:
+
+				with tempfile.TemporaryDirectory(
+					prefix="youtube_download_"
+				) as temp_dir:
+
+					ydl_opts = YOUTUBE_DOWNLOAD_VIDEO_OPTIONS.copy()
+					ydl_opts["outtmpl"] = str(
+						Path(temp_dir) / "%(id)s.%(ext)s"
+					)
+
+					with YoutubeDL(ydl_opts) as ydl:
+						ydl.download([url_scelto])
+
+					# Individua inline il file MKV generato da yt-dlp.
+					source_file = next(
+						Path(temp_dir).glob("*.mkv"),
+						None,
+					)
+
+					if source_file is None:
+						raise FileNotFoundError(
+							"yt-dlp non ha generato il file MKV."
+						)
+
+					print(f"✅ Download temporaneo completato.")
+
+					convert_video(
+						input_file=source_file,
+						output_file=output_path / f"{safe_name}.mp4",
+					)
+
+				print(f"✅ Video completato: {safe_name}")
+
+			elif query in {QueryType.AUDIO.value, QueryType.EXTENDED.value}:
+
+				ydl_opts = YOUTUBE_DOWNLOAD_AUDIO_OPTIONS.copy()
+				ydl_opts["outtmpl"] = str(output_path / f"{safe_name}.%(ext)s")
+
+				with YoutubeDL(ydl_opts) as ydl:
+					ydl.download([url_scelto])
+
+				print(f"✅ Audio completato: {safe_name}")
+
+			else:
+				print(f"❌ Query non valida per {track_name}")
+
+		except subprocess.CalledProcessError as e:
+			print(
+				f"❌ Conversione FFmpeg fallita per {track_name}: "
+				f"codice {e.returncode}"
+			)
+
+		except HTTPError as e:
+			print(f"❌ Errore HTTP ({e.code}) durante il download di {track_name}: {e}")
+			print("Riprova con un altro link.")
+
+		except Exception as e:
+			print(f"❌ Errore durante il download di {track_name}: {e}")
 		
 		# end for row
 	
-	return output_dir
+	return str(output_path)
 
 	# end
 
@@ -623,8 +709,11 @@ if __name__ == '__main__':
 		redirect_uri = input("Inserisci il Redirect URI: ").strip() if not redirect_uri else redirect_uri
 		print("\n")
 
-	# Crea il client.
+	# Crea il client Spotify.
 	sp = get_spotify_client(client_id, client_secret, redirect_uri)
+
+	# Crea il client Youtube.
+	yt_music = YTMusic()
 
 	#	####################################################################	#
 	#	MENU INTERATTIVO
@@ -644,8 +733,9 @@ if __name__ == '__main__':
 			for idx, item in enumerate(MENU_LIST, 1):
 				print(f"{idx}. {item.value}")
 			menu_scelta = input(f"\n👉 Seleziona un'opzione (1-{len(MENU_LIST)}): ").strip()
-			
+
 			if menu_scelta.isdigit() and 1 <= int(menu_scelta) <= len(MENU_LIST):
+
 				menu_scelta = MENU_LIST[int(menu_scelta) - 1]
 
 				if menu_scelta == MenuItems.CREATE_PLAYLIST:
@@ -722,74 +812,6 @@ if __name__ == '__main__':
 					
 					print(f"\n✅ Playlist aggiunta: {playlist_id} | {playlist_info['name']}")
 
-				# elif menu_scelta == MenuItems.EDIT_PLAYLIST:
-
-				# 	if not playlists:
-				# 		print("⚠️ Nessuna playlist da elaborare.")
-				# 		continue
-					
-				# 	print("\n🎧 Playlist inserite:")
-				# 	playlist_ids = print_local_playlists(playlists)
-				# 	playlist_scelta = input(f"\n👉 Seleziona un'opzione (1-{len(playlists)}): ").strip()
-
-				# 	if not playlist_scelta.isdigit():
-				# 		print("❌ Opzione non valida.")
-				# 		continue
-
-				# 	playlist_scelta = int(playlist_scelta)
-				# 	if not 1 <= playlist_scelta <= len(playlists):
-				# 		print("❌ Opzione non valida.")
-				# 		continue
-
-				# 	playlist_scelta = playlist_ids[playlist_scelta - 1]
-				# 	playlist_info = playlists[playlist_scelta]
-				# 	if not playlist_info:
-				# 		print("❌ Playlist non valida.")
-				# 		continue
-
-				# 	print("👉 Inserisci il valore di BPM di separazione (premi Ctrl + C per terminare):")
-				# 	bpm_scelto = []
-				# 	cont = 1
-
-				# 	try:
-
-				# 		bpm_scelto.clear()
-						
-				# 		while True:
-				# 			bpm_input = input(f"Valore {cont}: ").strip()
-							
-				# 			if not bpm_input.isdigit():
-				# 				print("❌ Valore non valido.")
-				# 				continue
-
-				# 			bpm_scelto.append(int(bpm_input))
-				# 			cont = cont + 1
-
-				# 			# end while
-
-				# 	except KeyboardInterrupt:
-
-				# 		print("\n🆗 Inserimento terminato manualmente.\n")
-				# 		if not bpm_scelto:
-				# 			print("⚠️ Nessun valore selezionato.")
-				# 			continue
-					
-				# 	# end try
-
-				# 	bpm_scelto = [0] + sorted(set(x for x in bpm_scelto)) + [float('inf')]
-				# 	ranges = [(bpm_scelto[i], bpm_scelto[i+1]) for i in range(len(bpm_scelto)-1)]
-
-				# 	# # Stampa formattata
-				# 	# for r in ranges:
-				# 	# 	if r[1] == float('inf'):
-				# 	# 		print(f"{r[0]}+ BPM")
-				# 	# 	else:
-				# 	# 		print(f"{r[0]} - {r[1]} BPM")
-
-				# 	create_playlist_by_bpm(sp, playlist_scelta, ranges, playlist_info["name"])
-
-				# 	print("✅ Elaborazione completata.")
-
 				elif menu_scelta == MenuItems.PRINT_PLAYLIST:
 
 					if not playlists:
@@ -846,7 +868,7 @@ if __name__ == '__main__':
 						continue
 						
 					csv_path = process_playlist(
-						sp,
+						sp, yt_music,
 						playlist_id = playlist_scelta,
 						playlist_name = playlist_info["name"],
 						query_type = QUERY_LIST[query_scelta-1],
@@ -873,7 +895,7 @@ if __name__ == '__main__':
 							continue
 						
 						csv_file = scelta_csv
-						playlist_name = os.path.splitext(os.path.basename(csv_file))[0]
+						playlist_name = Path(csv_file).stem
 
 					else:
 						print("\n🎧 Playlist elaborate:")
@@ -893,7 +915,7 @@ if __name__ == '__main__':
 					
 					# end if
 
-					if not os.path.exists(csv_file):
+					if not Path(csv_file).exists():
 						print(f"❌ Il file '{csv_file}' non esiste.\n")
 						continue
 
