@@ -177,15 +177,12 @@ def normalize_result(item: dict, id_key: str) -> dict | None:
 def convert_video(
     input_file: str | Path,
     output_file: str | Path,
-) -> Path:
+) -> None:
 	"""Converte un video in MP4 H.264/AAC.
 
 	Args:
 		input_file (str | Path): il percorso del video sorgente.
 		output_file (str | Path): il percorso del video convertito.
-
-	Returns:
-		Path: il percorso del video convertito.
 	"""
 
 	input_file = Path(input_file)
@@ -203,32 +200,72 @@ def convert_video(
 
 	output_file.parent.mkdir(parents=True, exist_ok=True)
 
-	command = [
+	intermediate_file = output_file.with_name(
+		f"{output_file.stem}.intermediate{output_file.suffix}"
+	)
+
+	encode_command = [
 		FFMPEG_PATH,
 		"-y",
 		"-hide_banner",
 		"-loglevel", "error",
 		"-nostats",
+
+		"-fflags", "+genpts",
 		"-i", str(input_file),
+
 		"-map", "0:v:0",
 		"-map", "0:a:0?",
+		"-map_metadata", "-1",
+		"-map_chapters", "-1",
+		"-sn",
+		"-dn",
+
 		"-vf", "scale=1280:-2",
 		"-c:v", "h264_videotoolbox",
 		"-profile:v", "high",
 		"-q:v", "35",
 		"-pix_fmt", "yuv420p",
 		"-tag:v", "avc1",
+
 		"-c:a", "aac",
 		"-b:a", "160k",
 		"-ar", "48000",
 		"-ac", "2",
+
+		"-max_muxing_queue_size", "4096",
 		"-movflags", "+faststart",
+
+		str(intermediate_file),
+	]
+
+	remux_command = [
+		FFMPEG_PATH,
+		"-y",
+		"-hide_banner",
+		"-loglevel", "error",
+		"-nostats",
+
+		"-fflags", "+genpts",
+		"-i", str(intermediate_file),
+
+		"-map", "0:v:0",
+		"-map", "0:a:0?",
+		"-map_metadata", "-1",
+		"-map_chapters", "-1",
+
+		"-c", "copy",
+		"-movflags", "+faststart",
+
 		str(output_file),
 	]
 
 	print(f"🎬 Conversione in corso: {output_file.name}")
-	subprocess.run(command, check=True)
 
-	return output_file
+	try:
+		subprocess.run(encode_command, check=True)
+		subprocess.run(remux_command, check=True)
+	finally:
+		intermediate_file.unlink(missing_ok=True)
 
 	# end
