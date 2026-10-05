@@ -1,9 +1,30 @@
 """
 
-	functions.py
-	di Mario Gabriele Carofano
+	spotify2youtube.py
+	di MARIO GABRIELE CAROFANO
 
-	Modulo contenente funzioni per l'interazione con Spotify e YouTube.
+	Script interattivo per importare playlist da Spotify, cercare
+	i relativi brani su YouTube e scaricarne automaticamente i
+	file multimediali (audio o video).
+
+	Offre le seguenti funzionalità:
+	1.	Estrazione Playlist da Spotify:
+		-	Autenticazione tramite le API Spotify (spotipy).
+		-	Recupera titolo e artisti di tutti i brani di una playlist.
+		-	Esporta i dati in un file CSV locale.
+		-	Il percorso dell'output può essere modificato.
+	2.	Ricerca su YouTube:
+		-	Utilizza yt-dlp per cercare il miglior video corrispondente
+		ad ogni brano.
+		-	Supporta molteplici modalità di ricerca definite da 'QueryType'.
+	3.	Download automatico:
+		-	Legge i file CSV generati e utilizza 'yt-dlp' per scaricare
+		i file multimediali (audio o video).
+		-	Il percorso dei download può essere modificato.
+
+	Dal menù interattivo, si può collegare l’account Spotify Developer
+	digitando il client ID, il client SECRET e il redirect URI (oppure si
+	possono salvare in un file config.py dedicato).
 
 """
 
